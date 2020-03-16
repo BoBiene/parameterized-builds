@@ -1,7 +1,6 @@
 define('jenkins/parameterized-build-pullrequest', [
     'aui/dialog2',
     'jquery',
-    'bitbucket/util/state',
     'bitbucket/util/server',
     'lodash',
     'aui/flag',
@@ -9,7 +8,6 @@ define('jenkins/parameterized-build-pullrequest', [
 ], function(
     dialog2,
     $,
-    pageState,
     server_util,
     _,
     flag,
@@ -19,38 +17,12 @@ define('jenkins/parameterized-build-pullrequest', [
     var urlRegex = /(.+?)\/projects\/[\w_ -]+?\/repos\/[\w_ -]+?\/.*/
     var urlParts = window.location.href.match(urlRegex);
 
-    $(".parameterized-build-pullrequest").click(function() {
-        var prJSON = require('bitbucket/internal/model/page-state').getPullRequest().toJSON();
-        var branch = prJSON.fromRef.id;
-        var commit = prJSON.fromRef.latestCommit;
-        var prDest = prJSON.toRef.displayId;
-
-        var resourceUrl = getResourceUrl("getJobs") + "?branch=" + encodeURIComponent(branch) + "&commit=" + commit + "&prdestination=" + encodeURIComponent(prDest) + "&prid=" + prJSON.id;
-
-        return $.when(getJobs(resourceUrl)).then(function( jobs ) {
-            allJobs = jobs
-            if (jobs.length == 1){
-                if (jobs[0].buildParameters.length == 0){
-                    var splitBranch = branch.split("/")
-                    splitBranch.splice(0, 2) //remove ref/heads or ref/tags
-                    var branchName = splitBranch.join("%2F")
-                    var buildUrl = getResourceUrl("triggerBuild/0/" + encodeURIComponent(branchName));
-                    triggerBuild(buildUrl);
-                    return false;
-                }
-            }
-            var buildUrl = getResourceUrl("triggerBuild");
-            showManualBuildDialog(buildUrl, branch, jobs);
-            return false;
-        });
-    });
-
-    function getResourceUrl(resourceType){
-        return urlParts[1] + '/rest/parameterized-builds/latest/projects/' + pageState.getProject().key + '/repos/'
-            + pageState.getRepository().slug + '/' + resourceType;
+    function getResourceUrl(context, resourceType){
+        return urlParts[1] + '/rest/parameterized-builds/latest/projects/' + context.project.key + '/repos/'
+            + context.repository.slug + '/' + resourceType;
     }
 
-    function getJobs(resourceUrl){
+    function getData(resourceUrl){
         return server_util.ajax({
             type: "GET",
             url: resourceUrl,
@@ -199,26 +171,53 @@ define('jenkins/parameterized-build-pullrequest', [
         return "";
     }
 
-    function buttonPluginFactory(pluginAPI) {
-        var timesClicked = 0;
+    function buttonPluginFactory(pluginAPI, context) {
+        var pullRequest = context.pullRequest;
+        var branch = pullRequest.fromRef.id;
+        var commit = pullRequest.fromRef.latestCommit;
+        var prDest = pullRequest.toRef.displayId;
 
-        function getLabel() {
-            return 'Button clicked ' + timesClicked + ' times';
+        var jobsUrl = getResourceUrl(context, "getJobs") + "?branch=" + encodeURIComponent(branch) + "&commit=" + commit + "&prdestination=" + encodeURIComponent(prDest) + "&prid=" + pullRequest.id;
+        var hookUrl = getResourceUrl(context, "getHookEnabled");
+
+        function displayManualModal() {
+            if (allJobs.length == 1){
+                if (allJobs[0].buildParameters.length == 0){
+                    var splitBranch = branch.split("/")
+                    splitBranch.splice(0, 2) //remove ref/heads or ref/tags
+                    var branchName = splitBranch.join("%2F")
+                    var buildUrl = getResourceUrl(context, "triggerBuild/0/" + encodeURIComponent(branchName));
+                    triggerBuild(buildUrl);
+                    return false;
+                }
+            }
+            var buildUrl = getResourceUrl(context, "triggerBuild");
+            showManualBuildDialog(buildUrl, branch, allJobs);
+            return false;
         }
+
+        $.when(getData(jobsUrl), getData(hookUrl)).then(function( jobs, hookEnabled ) {
+            // if the hook is enabled and the user can manually trigger jobs
+            if (hookEnabled[0] && jobs[0].length > 0) {
+                allJobs = jobs[0];
+                // show the button
+                pluginAPI.updateAttributes({
+                    hidden: false,
+                });
+            }
+        });
 
         return {
             type: 'button',
             onAction: function onAction() {
-                timesClicked++;
-                pluginAPI.updateAttributes({
-                    label: getLabel(),
-                });
+                displayManualModal();
             },
-            label: getLabel(),
+            label: 'Build in Jenkins',
+            hidden: true
         };
     }
 
-    registry.registerPlugin('com.kylenicholls.stash.parameterized-builds:pr-trigger-jenkins', buttonPluginFactory);
+    registry.registerExtension('com.kylenicholls.stash.parameterized-builds:pr-trigger-jenkins', buttonPluginFactory);
 });
 
 $(document).ready(function() {
